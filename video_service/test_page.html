@@ -26,6 +26,7 @@
   <select id="images"><option value="placeholder">Title cards (fast)</option><option value="ai">AI paintings (local, slower)</option></select>
   <label><input type="checkbox" id="aiprompts"> Let the LLM write each picture prompt</label>
   <label><input type="checkbox" id="narrate" checked> Narrate the story (Piper voice + tanpura + scene sounds)</label>
+  <label><input type="checkbox" id="narrator" checked> Show the animated storyteller (lip-synced)</label>
   <button id="go">Make video</button>
   <div class="bar"><span id="fill"></span></div>
   <div id="msg"></div>
@@ -43,6 +44,7 @@ $('go').onclick = async () => {
   form.append('images', $('images').value);
   form.append('ai_prompts', $('aiprompts').checked);
   form.append('narration', $('narrate').checked ? 'auto' : 'none');
+  form.append('narrator', $('narrator').checked);
   $('go').disabled = true; $('out').hidden = true; $('dl').hidden = true;
   const res = await fetch('/api/video/jobs/upload', { method: 'POST', body: form });
   const data = await res.json();

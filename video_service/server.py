@@ -58,6 +58,7 @@ class VideoRequest(BaseModel):
     audio_url: str | None = Field(default=None, description="Optional narration WAV URL from the main backend")
     images: Literal["placeholder", "ai"] = "placeholder"
     narration: Literal["auto", "piper", "none"] = Field(default="auto", description="auto = narrate with Piper if installed")
+    narrator: bool = Field(default=True, description="Show the animated storyteller, lip-synced to the voice")
     ai_prompts: bool = Field(default=False, description="Let the local LLM write a picture prompt per section")
     subtitles: bool = True
 
@@ -79,7 +80,7 @@ def worker() -> None:
         try:
             video_core.render_video(
                 data, OUTPUT_DIR / f"{job_id}.mp4", audio, images=req.images, ai_prompts=req.ai_prompts,
-                subtitles=req.subtitles, narration=req.narration, piper_model=PIPER_MODEL,
+                subtitles=req.subtitles, narration=req.narration, narrator=req.narrator, piper_model=PIPER_MODEL,
                 sounds_dir=SOUNDS_DIR if SOUNDS_DIR.is_dir() else None, sd_model=SD_MODEL, ollama_url=OLLAMA_URL, ollama_model=OLLAMA_MODEL,
                 progress=progress)
             job.update(status="done", progress=1.0, video_url=f"/api/video/jobs/{job_id}/file")
@@ -139,7 +140,8 @@ def create_job(req: VideoRequest) -> dict:
 async def create_job_upload(performance: UploadFile = File(...), audio: UploadFile | None = File(None),
                             images: Literal["placeholder", "ai"] = Form("placeholder"),
                             ai_prompts: bool = Form(False), subtitles: bool = Form(True),
-                            narration: Literal["auto", "piper", "none"] = Form("auto")) -> dict:
+                            narration: Literal["auto", "piper", "none"] = Form("auto"),
+                            narrator: bool = Form(True)) -> dict:
     """Same thing with file uploads — used by the built-in test page."""
     job_id = uuid.uuid4().hex[:12]
     try:
@@ -150,7 +152,8 @@ async def create_job_upload(performance: UploadFile = File(...), audio: UploadFi
     if audio is not None and audio.filename:
         audio_path = UPLOAD_DIR / f"{job_id}{Path(audio.filename).suffix or '.wav'}"
         audio_path.write_bytes(await audio.read())
-    req = VideoRequest(performance=data, images=images, ai_prompts=ai_prompts, subtitles=subtitles, narration=narration)
+    req = VideoRequest(performance=data, images=images, ai_prompts=ai_prompts, subtitles=subtitles, narration=narration,
+                       narrator=narrator)
     return enqueue(data, audio_path, req, job_id)
 
 

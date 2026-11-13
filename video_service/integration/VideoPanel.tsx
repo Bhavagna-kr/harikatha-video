@@ -9,7 +9,7 @@ const VIDEO_API = 'http://localhost:8001'
 
 type Job = { job_id: string; status: 'queued' | 'running' | 'done' | 'failed'; progress: number; message: string; video_url: string | null }
 
-export default function VideoPanel({ performance, audioUrl }: { performance: unknown; audioUrl?: string | null }) {
+export default function VideoPanel({ performance }: { performance: unknown }) {
   const [images, setImages] = useState<'placeholder' | 'ai'>('placeholder')
   const [job, setJob] = useState<Job | null>(null)
   const [error, setError] = useState('')
@@ -25,7 +25,9 @@ export default function VideoPanel({ performance, audioUrl }: { performance: unk
       const res = await fetch(`${VIDEO_API}/api/video/jobs`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ performance, audio_url: audioUrl ?? null, images, ai_prompts: images === 'ai' })
+        // No audio_url: the service narrates sentence by sentence itself (exact subtitle + lip timing).
+        // Pass audio_url only if you want the backend's own narration file instead.
+        body: JSON.stringify({ performance, images, ai_prompts: images === 'ai', narration: 'auto', narrator: true })
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.detail || 'Could not start the video')
@@ -54,7 +56,6 @@ export default function VideoPanel({ performance, audioUrl }: { performance: unk
         <button className="audio-button" onClick={start} disabled={busy}>
           {busy ? `Making video… ${Math.round((job?.progress ?? 0) * 100)}%` : 'Make Video'}
         </button>
-        {!audioUrl && <small>Tip: generate full narration first to get a video with sound.</small>}
       </div>
       {busy && <small>{job?.message}</small>}
       {job?.status === 'failed' && <small style={{ color: '#a33' }}>{job.message}</small>}

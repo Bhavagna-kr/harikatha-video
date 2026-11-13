@@ -6,6 +6,7 @@ A separate service (port **8001**) that turns a generated performance into a nar
 - one picture per section (title card or AI painting) with a slow zoom and a section label
 - narration spoken sentence by sentence with Piper, so subtitles match the voice exactly
 - soft tanpura underneath, plus scene sounds (battle drums, river, flute, strings) per section
+- an original animated storyteller in the corner whose mouth moves with the voice (`narrator.py`)
 
 It never imports the main backend, so the team can keep changing the backend and frontend freely.
 The only contract is the performance JSON: `{ title, sections: [{ type, title, content }] }`.
@@ -25,7 +26,8 @@ Voice model and sounds default to `../backend/voices` and `../backend/sounds`; o
 ## Files
 | File | What it is |
 |---|---|
-| `video_core.py` | The engine. `render_video(performance, out, audio)` — no web code. |
+| `video_core.py` | The engine. `render_video(performance, out, ...)` — no web code. |
+| `narrator.py` | Draws the storyteller and turns voice loudness into mouth movements. |
 | `server.py` | FastAPI wrapper: job queue + progress. |
 | `test_page.html` | Standalone demo page at http://localhost:8001 |
 | `make_video.py` | Command-line version. |

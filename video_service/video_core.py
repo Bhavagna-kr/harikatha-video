@@ -23,6 +23,8 @@ from typing import Callable
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
+import narrator as narrator_mod
+
 WIDTH, HEIGHT, FPS = 1280, 720, 25
 Progress = Callable[[float, str], None]  # progress(fraction 0..1, message)
 
@@ -44,7 +46,9 @@ def get_sections(data: dict) -> tuple[str, list[dict]]:
 
 def section_text(sec: dict) -> str:
     # Same text the backend narrates: "title.\ncontent"
-    return f"{sec.get('title', '')}.\n{sec.get('content', '')}".strip()
+    title = str(sec.get("title") or "").strip()
+    content = str(sec.get("content") or "").strip()
+    return f"{title}.\n{content}" if title else content
 
 
 # ---------------------------------------------------------------- 2. timing
@@ -187,18 +191,19 @@ def chunk_text(text: str, max_chars: int = 90) -> list[str]:
             sentence = sentence[cut:].strip()
         if sentence.strip():
             pieces.append(sentence.strip())
-    return pieces
+    return [p for p in pieces if any(ch.isalnum() for ch in p)]
 
 
-def caption_image(text: str, path: Path) -> None:
-    """Transparent 1280x720 PNG: the caption near the bottom, cream text with a dark outline."""
+def caption_image(text: str, path: Path, reserve_right: int = 0) -> None:
+    """Transparent 1280x720 PNG: the caption near the bottom, cream text with a dark outline.
+    reserve_right keeps that many pixels free on the right (for the narrator)."""
     img = Image.new("RGBA", (WIDTH, HEIGHT), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
     font = _font(CAPTION_FONTS, 34)
     lines, line = [], ""
     for word in text.split():  # word-wrap to ~85% of the width
         trial = f"{line} {word}".strip()
-        if draw.textlength(trial, font=font) > WIDTH * 0.85 and line:
+        if draw.textlength(trial, font=font) > (WIDTH - reserve_right) * 0.85 and line:
             lines.append(line)
             line = word
         else:
@@ -206,7 +211,7 @@ def caption_image(text: str, path: Path) -> None:
     lines.append(line)
     y = HEIGHT - 40 - 44 * len(lines)
     for ln in lines:
-        draw.text(((WIDTH - draw.textlength(ln, font=font)) / 2, y), ln, font=font,
+        draw.text(((WIDTH - reserve_right - draw.textlength(ln, font=font)) / 2, y), ln, font=font,
                   fill=(255, 248, 230), stroke_width=3, stroke_fill=(20, 10, 5))
         y += 44
     img.save(path)
@@ -264,7 +269,10 @@ def narrate_section(sec: dict, index: int, work: Path, model_path: str, pace: fl
         for j, chunk in enumerate(chunk_text(section_text(sec))):
             part = work / f"voice_{index}_{j}.wav"
             with wave.open(str(part), "wb") as w:
-                voice.synthesize_wav(chunk, w, syn_config=config)
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(rate)
+                voice.synthesize_wav(chunk, w, syn_config=config, set_wav_format=False)
             with wave.open(str(part), "rb") as r:
                 frames = r.readframes(r.getnframes())
             d = len(frames) / 2 / rate
@@ -353,10 +361,11 @@ def ken_burns_clip(image: Path, seconds: float, index: int, out: Path,
 
 
 INTRO_SECONDS = 4.5
+NARRATOR_SPACE = 250  # pixels kept free on the right of the subtitles for the narrator
 
 
 def render_video(data: dict, out: Path, audio: Path | None = None, *, images: str = "placeholder",
-                 ai_prompts: bool = False, subtitles: bool = True, narration: str = "auto",
+                 ai_prompts: bool = False, subtitles: bool = True, narration: str = "auto", narrator: bool = True,
                  piper_model: str = "", sounds_dir: Path | None = None, sd_model: str = "stabilityai/sd-turbo",
                  ollama_url: str = "http://localhost:11434", ollama_model: str = "qwen2.5:3b",
                  progress: Progress = lambda f, m: None) -> Path:
@@ -367,6 +376,7 @@ def render_video(data: dict, out: Path, audio: Path | None = None, *, images: st
       - narration "auto"/"piper" and Piper installed: the service narrates sentence by sentence (exact sync)
         and adds tanpura, temple bell and scene sounds.
       - otherwise: silent video.
+    narrator=True adds the animated storyteller in the corner, mouth moving with the voice.
     Structure: title card -> one segment per section (picture + label + subtitles)."""
     if not shutil.which("ffmpeg"):
         raise VideoError("ffmpeg not found on PATH (Mac: brew install ffmpeg).")
@@ -374,6 +384,7 @@ def render_video(data: dict, out: Path, audio: Path | None = None, *, images: st
     speak = audio is None and narration != "none" and narration_available(piper_model)
     if narration == "piper" and audio is None and not speak:
         raise VideoError("Narration needs piper-tts installed and a voice model (PIPER_MODEL).")
+    show_narrator = narrator and (speak or audio is not None)  # nothing to lip-sync without a voice
     work = Path(tempfile.mkdtemp(prefix="harikatha_video_"))
     try:
         n = len(sections)
@@ -421,7 +432,7 @@ def render_video(data: dict, out: Path, audio: Path | None = None, *, images: st
             if subtitles:
                 for j, (a, b, text) in enumerate(timings):
                     png = work / f"cap_{i}_{j}.png"
-                    caption_image(text, png)
+                    caption_image(text, png, reserve_right=NARRATOR_SPACE if show_narrator else 0)
                     overlays.append((a, b, png))
             clips.append(work / f"clip_{i}.mp4")
             ken_burns_clip(img, dur, i, clips[-1], overlays)
@@ -432,7 +443,7 @@ def render_video(data: dict, out: Path, audio: Path | None = None, *, images: st
         joined = work / "joined.mp4"
         run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(work / "clips.txt"), "-c", "copy", str(joined)])
 
-        soundtrack = None
+        soundtrack, voice = None, None
         if speak:
             voice = work / "voice.wav"
             join_wavs(voice_parts, voice, rate=_voice(piper_model).config.sample_rate)
@@ -446,11 +457,29 @@ def render_video(data: dict, out: Path, audio: Path | None = None, *, images: st
             soundtrack = work / "soundtrack.wav"  # shift the given narration to start after the title card
             run(["ffmpeg", "-y", "-i", str(audio), "-af", f"adelay={int(INTRO_SECONDS * 1000)}:all=1",
                  "-ac", "2", "-ar", "44100", str(soundtrack)])
+            voice = work / "voice_mono.wav"  # 16-bit mono copy, only used to move the narrator's mouth
+            run(["ffmpeg", "-y", "-i", str(soundtrack), "-ac", "1", "-ar", "22050", "-c:a", "pcm_s16le", str(voice)])
 
         out.parent.mkdir(parents=True, exist_ok=True)
         cmd = ["ffmpeg", "-y", "-i", str(joined)]
-        cmd += (["-i", str(soundtrack), "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-shortest"] if soundtrack
-                else ["-c", "copy"])
+        if show_narrator and voice:
+            progress(0.98, "Animating the narrator")
+            total = INTRO_SECONDS + sum(d for _, d, _ in plan)
+            listing = narrator_mod.build_narrator_video(voice, work, total)
+            cmd += ["-f", "concat", "-safe", "0", "-i", str(listing)]
+            # Shrink the medallion, place it bottom-right, and let it bob gently (sin) as if breathing.
+            overlay = (f"[1:v]scale=220:-1,format=rgba[n];"
+                       f"[0:v][n]overlay=x=W-w-24:y='H-h-18+4*sin(t*1.7)':shortest=1,format=yuv420p[v]")
+            if soundtrack:
+                cmd += ["-i", str(soundtrack)]
+            cmd += ["-filter_complex", overlay, "-map", "[v]"]
+            if soundtrack:
+                cmd += ["-map", "2:a", "-c:a", "aac", "-b:a", "192k"]
+            cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-r", str(FPS)]
+        elif soundtrack:
+            cmd += ["-i", str(soundtrack), "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-shortest"]
+        else:
+            cmd += ["-c", "copy"]
         run(cmd + [str(out)])
         progress(1.0, "Done")
         return out

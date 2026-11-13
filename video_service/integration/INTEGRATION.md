@@ -4,7 +4,8 @@ The video service is separate (port 8001). The **only** things the main app must
 
 1. The performance object: `{ "title": "...", "sections": [ { "type", "title", "content" }, ... ] }`
    (a full saved record `{ "performance": {...} }` also works).
-2. Optionally, a URL to the full narration WAV served by the main backend.
+2. Nothing else: the service narrates the story itself (Piper), adds music and the animated narrator.
+   (Optionally it can use the backend's narration WAV via `audio_url` instead.)
 
 If the team renames fields, only `get_sections()` in `video_core.py` needs to change.
 
@@ -18,7 +19,7 @@ If the team renames fields, only `get_sections()` in `video_core.py` needs to ch
 3. Where the performance is shown (in the current App.tsx: right after the full-narration
    `<div className="audio-tools">…</div>`):
    ```tsx
-   <VideoPanel performance={result.performance} audioUrl={fullAudio} />
+   <VideoPanel performance={result.performance} />
    ```
 
 No backend changes are needed.
@@ -27,7 +28,7 @@ No backend changes are needed.
 
 | Method | Path | Body / result |
 |---|---|---|
-| POST | `/api/video/jobs` | `{ performance, audio_url?, images: "placeholder" \| "ai", ai_prompts?, subtitles? }` → `{ job_id }` |
+| POST | `/api/video/jobs` | `{ performance, images: "placeholder" \| "ai", ai_prompts?, narration?: "auto" \| "none", narrator?: bool, subtitles?, audio_url? }` → `{ job_id }` |
 | GET | `/api/video/jobs/{job_id}` | `{ status: queued \| running \| done \| failed, progress: 0..1, message, video_url }` |
 | GET | `/api/video/jobs/{job_id}/file` | the MP4 |
 | GET | `/api/video/health` | `{ ffmpeg, ai_images }` |
