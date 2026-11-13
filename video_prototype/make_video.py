@@ -8,7 +8,7 @@ Pipeline (one image per section):
   2. Work out how long each section lasts inside the narration WAV.
   3. Make one picture per section (placeholder card, or a local AI image).
   4. Animate each picture with a slow zoom/pan ("Ken Burns" effect) for its duration.
-  5. Join the clips, add the narration audio, and burn in subtitles.
+  5. Draw subtitles on top, join the clips, and add the narration audio.
 
 Usage:
   python make_video.py performance.json --audio narration.wav --out harikatha.mp4
@@ -165,27 +165,9 @@ class SDImages:
         image.save(path)
 
 
-# ---------------------------------------------------------------- 4. animate
-def ken_burns_clip(image: Path, seconds: float, index: int, out: Path) -> None:
-    frames = max(1, round(seconds * FPS))
-    # Alternate zoom-in and zoom-out so consecutive slides don't feel identical.
-    zoom = f"min(1+0.12*on/{frames},1.12)" if index % 2 == 0 else f"max(1.12-0.12*on/{frames},1.0)"
-    vf = (
-        f"scale={WIDTH * 4}:{HEIGHT * 4}:force_original_aspect_ratio=increase,crop={WIDTH * 4}:{HEIGHT * 4},"  # big canvas = smooth zoom
-        f"zoompan=z='{zoom}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={frames}:s={WIDTH}x{HEIGHT}:fps={FPS},"
-        f"fade=t=in:st=0:d=0.5,fade=t=out:st={max(0, seconds - 0.5):.2f}:d=0.5,format=yuv420p"
-    )
-    run(["ffmpeg", "-y", "-loop", "1", "-i", str(image), "-vf", vf, "-frames:v", str(frames),
-         "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", str(out)])
-
-
-# ---------------------------------------------------------------- 5. subtitles + final mux
-def fmt_time(t: float) -> str:
-    h, rem = divmod(t, 3600)
-    m, s = divmod(rem, 60)
-    return f"{int(h):02}:{int(m):02}:{int(s):02},{int((s % 1) * 1000):03}"
-
-
+# ---------------------------------------------------------------- 4. subtitles
+# We draw subtitles ourselves with Pillow instead of FFmpeg's "subtitles" filter,
+# because Homebrew's FFmpeg on Mac is built without it (no libass).
 def chunk_text(text: str, max_chars: int = 90) -> list[str]:
     """Split into sentence-sized caption lines, breaking long sentences at spaces."""
     pieces = []
@@ -199,18 +181,76 @@ def chunk_text(text: str, max_chars: int = 90) -> list[str]:
     return pieces
 
 
-def write_srt(sections: list[dict], durations: list[float], path: Path) -> None:
-    lines, n, start = [], 1, 0.0
-    for sec, dur in zip(sections, durations):
-        chunks = chunk_text(section_text(sec))
-        total_chars = sum(len(c) for c in chunks) or 1
-        t = start
-        for c in chunks:  # time each caption by its share of the section's characters
-            d = dur * len(c) / total_chars
-            lines.append(f"{n}\n{fmt_time(t)} --> {fmt_time(t + d)}\n{c}\n")
-            n, t = n + 1, t + d
-        start += dur
-    path.write_text("\n".join(lines), encoding="utf-8")
+def caption_font(size: int) -> ImageFont.ImageFont:
+    # Arial Unicode (Mac) also covers Hindi/Telugu/Tamil/Kannada letters.
+    for p in ["/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+              "/System/Library/Fonts/Supplemental/Arial.ttf",
+              "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+              "C:/Windows/Fonts/arial.ttf"]:
+        if Path(p).exists():
+            return ImageFont.truetype(p, size)
+    return ImageFont.load_default(size=size)
+
+
+def caption_image(text: str, path: Path) -> None:
+    """A transparent 1280x720 PNG with the caption near the bottom, white text with a dark outline."""
+    img = Image.new("RGBA", (WIDTH, HEIGHT), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    font = caption_font(34)
+    # Word-wrap to fit ~85% of the frame width.
+    lines, line = [], ""
+    for word in text.split():
+        trial = f"{line} {word}".strip()
+        if draw.textlength(trial, font=font) > WIDTH * 0.85 and line:
+            lines.append(line)
+            line = word
+        else:
+            line = trial
+    lines.append(line)
+    y = HEIGHT - 40 - 44 * len(lines)
+    for ln in lines:
+        w = draw.textlength(ln, font=font)
+        draw.text(((WIDTH - w) / 2, y), ln, font=font, fill=(255, 248, 230),
+                  stroke_width=3, stroke_fill=(20, 10, 5))
+        y += 44
+    img.save(path)
+
+
+def section_captions(sec: dict, seconds: float, index: int, work: Path) -> list[tuple[float, float, Path]]:
+    """Caption PNGs for one section, each with its start/end time inside that section."""
+    chunks = chunk_text(section_text(sec))
+    total_chars = sum(len(c) for c in chunks) or 1
+    out, t = [], 0.0
+    for j, c in enumerate(chunks):  # time each caption by its share of the section's characters
+        d = seconds * len(c) / total_chars
+        png = work / f"cap_{index}_{j}.png"
+        caption_image(c, png)
+        out.append((t, t + d, png))
+        t += d
+    return out
+
+
+# ---------------------------------------------------------------- 5. animate
+def ken_burns_clip(image: Path, seconds: float, index: int, out: Path,
+                   captions: list[tuple[float, float, Path]]) -> None:
+    frames = max(1, round(seconds * FPS))
+    # Alternate zoom-in and zoom-out so consecutive slides don't feel identical.
+    zoom = f"min(1+0.12*on/{frames},1.12)" if index % 2 == 0 else f"max(1.12-0.12*on/{frames},1.0)"
+    chain = [
+        f"[0:v]scale={WIDTH * 4}:{HEIGHT * 4}:force_original_aspect_ratio=increase,crop={WIDTH * 4}:{HEIGHT * 4},"  # big canvas = smooth zoom
+        f"zoompan=z='{zoom}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={frames}:s={WIDTH}x{HEIGHT}:fps={FPS}[v0]"
+    ]
+    cmd = ["ffmpeg", "-y", "-loop", "1", "-i", str(image)]
+    last = "v0"
+    # Lay each caption PNG over the video only between its start and end time.
+    for k, (a, b, png) in enumerate(captions, start=1):
+        cmd += ["-i", str(png)]
+        chain.append(f"[{last}][{k}:v]overlay=0:0:enable='between(t,{a:.2f},{b:.2f})'[v{k}]")
+        last = f"v{k}"
+    chain.append(f"[{last}]fade=t=in:st=0:d=0.5,fade=t=out:st={max(0, seconds - 0.5):.2f}:d=0.5,format=yuv420p[out]")
+    cmd += ["-filter_complex", ";".join(chain), "-map", "[out]", "-frames:v", str(frames),
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", str(out)]
+    run(cmd)
 
 
 def run(cmd: list[str]) -> None:
@@ -256,8 +296,9 @@ def main() -> None:
         else:
             print(f"[{i + 1}/{len(sections)}] placeholder card: {sec.get('title', '')}")
             placeholder_image(sec, i, img)
+        caps = [] if args.no_subtitles else section_captions(sec, dur, i, work)
         clip = work / f"clip_{i}.mp4"
-        ken_burns_clip(img, dur, i, clip)
+        ken_burns_clip(img, dur, i, clip, caps)
         clips.append(clip)
 
     # Join all silent clips into one video.
@@ -266,23 +307,14 @@ def main() -> None:
     joined = work / "joined.mp4"
     run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(concat_list), "-c", "copy", str(joined)])
 
-    # Final pass: add narration + burn subtitles.
+    # Final pass: add the narration (subtitles are already in the clips, so video is copied as-is).
+    out = args.out.resolve()
     cmd = ["ffmpeg", "-y", "-i", str(joined)]
     if args.audio:
-        cmd += ["-i", str(args.audio)]
-    if not args.no_subtitles:
-        srt = work / "subs.srt"
-        write_srt(sections, durations, srt)
-        style = "FontSize=18,PrimaryColour=&H00F0FFFF,OutlineColour=&H80000000,BorderStyle=1,Outline=2,MarginV=30"
-        # Run from the work dir so the subtitles filter gets a plain filename (avoids path-escaping issues).
-        cmd += ["-vf", f"subtitles=subs.srt:force_style='{style}'"]
-    cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23"]
-    if args.audio:
-        cmd += ["-c:a", "aac", "-b:a", "160k", "-shortest"]
-    out = args.out.resolve()  # resolved before cwd changes
-    proc = subprocess.run(cmd + [str(out)], cwd=work, capture_output=True, text=True)
-    if proc.returncode != 0:
-        sys.exit(f"Final render failed:\n{proc.stderr[-1500:]}")
+        cmd += ["-i", str(args.audio), "-c:v", "copy", "-c:a", "aac", "-b:a", "160k", "-shortest"]
+    else:
+        cmd += ["-c", "copy"]
+    run(cmd + [str(out)])
 
     shutil.rmtree(work, ignore_errors=True)
     print(f"Done → {out}")
