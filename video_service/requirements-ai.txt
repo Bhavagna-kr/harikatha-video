@@ -1,0 +1,6 @@
+# Optional: local AI paintings (Apple Silicon GPU via PyTorch "mps")
+-r requirements.txt
+torch
+diffusers
+transformers
+accelerate

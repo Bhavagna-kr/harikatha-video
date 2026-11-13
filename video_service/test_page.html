@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Harikatha Video Service</title>
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; background: #f7f3ee; color: #2d211c; max-width: 720px; margin: 40px auto; padding: 0 20px; }
+  h1 { font-family: Georgia, serif; font-weight: 600; }
+  .card { background: #fffdf9; border: 1px solid #e8dccd; border-radius: 14px; padding: 24px; }
+  label { display: block; margin: 14px 0 6px; font-weight: 600; font-size: 14px; }
+  button { margin-top: 20px; background: #5b3a2e; color: #fff; border: 0; border-radius: 10px; padding: 12px 20px; font-size: 15px; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  .bar { height: 8px; background: #eadfd2; border-radius: 4px; margin-top: 18px; overflow: hidden; }
+  .bar span { display: block; height: 100%; width: 0; background: #b07a45; transition: width .4s; }
+  #msg { font-size: 14px; color: #7a6656; margin-top: 8px; min-height: 18px; }
+  video { width: 100%; margin-top: 18px; border-radius: 10px; }
+</style>
+</head>
+<body>
+<h1>Harikatha Video Service</h1>
+<p>Test page: upload a performance JSON (from the app's "Download performance JSON") and, optionally, its narration WAV.</p>
+<div class="card">
+  <label>Performance JSON</label><input type="file" id="perf" accept=".json">
+  <label>Narration audio (optional)</label><input type="file" id="audio" accept="audio/*">
+  <label>Pictures</label>
+  <select id="images"><option value="placeholder">Title cards (fast)</option><option value="ai">AI paintings (local, slower)</option></select>
+  <label><input type="checkbox" id="aiprompts"> Let the LLM write each picture prompt</label>
+  <button id="go">Make video</button>
+  <div class="bar"><span id="fill"></span></div>
+  <div id="msg"></div>
+  <video id="out" controls hidden></video>
+  <p><a id="dl" hidden>Download MP4</a></p>
+</div>
+<script>
+const $ = id => document.getElementById(id);
+$('go').onclick = async () => {
+  const perf = $('perf').files[0];
+  if (!perf) { $('msg').textContent = 'Choose a performance JSON first.'; return; }
+  const form = new FormData();
+  form.append('performance', perf);
+  if ($('audio').files[0]) form.append('audio', $('audio').files[0]);
+  form.append('images', $('images').value);
+  form.append('ai_prompts', $('aiprompts').checked);
+  $('go').disabled = true; $('out').hidden = true; $('dl').hidden = true;
+  const res = await fetch('/api/video/jobs/upload', { method: 'POST', body: form });
+  const data = await res.json();
+  if (!res.ok) { $('msg').textContent = data.detail; $('go').disabled = false; return; }
+  const timer = setInterval(async () => {
+    const job = await (await fetch('/api/video/jobs/' + data.job_id)).json();
+    $('fill').style.width = (job.progress * 100) + '%';
+    $('msg').textContent = job.message;
+    if (job.status === 'done' || job.status === 'failed') {
+      clearInterval(timer); $('go').disabled = false;
+      if (job.status === 'done') {
+        $('out').src = job.video_url; $('out').hidden = false;
+        $('dl').href = job.video_url; $('dl').hidden = false;
+      }
+    }
+  }, 1500);
+};
+</script>
+</body>
+</html>
