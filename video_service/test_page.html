@@ -21,10 +21,11 @@
 <p>Test page: upload a performance JSON (from the app's "Download performance JSON") and, optionally, its narration WAV.</p>
 <div class="card">
   <label>Performance JSON</label><input type="file" id="perf" accept=".json">
-  <label>Narration audio (optional)</label><input type="file" id="audio" accept="audio/*">
+  <label>Your own narration audio (optional — leave empty to let the service narrate)</label><input type="file" id="audio" accept="audio/*">
   <label>Pictures</label>
   <select id="images"><option value="placeholder">Title cards (fast)</option><option value="ai">AI paintings (local, slower)</option></select>
   <label><input type="checkbox" id="aiprompts"> Let the LLM write each picture prompt</label>
+  <label><input type="checkbox" id="narrate" checked> Narrate the story (Piper voice + tanpura + scene sounds)</label>
   <button id="go">Make video</button>
   <div class="bar"><span id="fill"></span></div>
   <div id="msg"></div>
@@ -41,6 +42,7 @@ $('go').onclick = async () => {
   if ($('audio').files[0]) form.append('audio', $('audio').files[0]);
   form.append('images', $('images').value);
   form.append('ai_prompts', $('aiprompts').checked);
+  form.append('narration', $('narrate').checked ? 'auto' : 'none');
   $('go').disabled = true; $('out').hidden = true; $('dl').hidden = true;
   const res = await fetch('/api/video/jobs/upload', { method: 'POST', body: form });
   const data = await res.json();

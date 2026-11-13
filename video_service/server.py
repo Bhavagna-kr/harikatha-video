@@ -3,7 +3,7 @@ Harikatha Video Service — a small, separate web service (port 8001) that turns
 
 It does not import or depend on the main backend. The contract is just:
 
-  POST /api/video/jobs          {"performance": {...}, "audio_url": "...", "images": "placeholder"|"ai", ...}
+  POST /api/video/jobs          {"performance": {...}, "images": "placeholder"|"ai", "narration": "auto"|"none", ...}
                                 -> {"job_id": "..."}
   GET  /api/video/jobs/{id}     -> {"status": "queued|running|done|failed", "progress": 0..1, "message", "video_url"}
   GET  /api/video/jobs/{id}/file -> the MP4
@@ -41,6 +41,9 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:3b")
 SD_MODEL = os.getenv("SD_MODEL", "stabilityai/sd-turbo")
+# Narration voice + background sounds. Defaults point at the files already in the main repo's backend folder.
+PIPER_MODEL = os.getenv("PIPER_MODEL", str(HERE.parent / "backend" / "voices" / "en_US-lessac-medium.onnx"))
+SOUNDS_DIR = Path(os.getenv("SOUNDS_DIR", str(HERE.parent / "backend" / "sounds")))
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",")
 # Only download narration from these hosts (the main backend), never from arbitrary URLs.
 AUDIO_HOSTS = set(os.getenv("AUDIO_HOSTS", "localhost,127.0.0.1").split(","))
@@ -54,6 +57,7 @@ class VideoRequest(BaseModel):
     performance: dict[str, Any] = Field(description="The performance ({title, sections}) or a full saved record")
     audio_url: str | None = Field(default=None, description="Optional narration WAV URL from the main backend")
     images: Literal["placeholder", "ai"] = "placeholder"
+    narration: Literal["auto", "piper", "none"] = Field(default="auto", description="auto = narrate with Piper if installed")
     ai_prompts: bool = Field(default=False, description="Let the local LLM write a picture prompt per section")
     subtitles: bool = True
 
@@ -75,7 +79,8 @@ def worker() -> None:
         try:
             video_core.render_video(
                 data, OUTPUT_DIR / f"{job_id}.mp4", audio, images=req.images, ai_prompts=req.ai_prompts,
-                subtitles=req.subtitles, sd_model=SD_MODEL, ollama_url=OLLAMA_URL, ollama_model=OLLAMA_MODEL,
+                subtitles=req.subtitles, narration=req.narration, piper_model=PIPER_MODEL,
+                sounds_dir=SOUNDS_DIR if SOUNDS_DIR.is_dir() else None, sd_model=SD_MODEL, ollama_url=OLLAMA_URL, ollama_model=OLLAMA_MODEL,
                 progress=progress)
             job.update(status="done", progress=1.0, video_url=f"/api/video/jobs/{job_id}/file")
         except Exception as exc:  # show the reason in the UI instead of crashing the worker
@@ -118,6 +123,7 @@ def enqueue(data: dict, audio: Path | None, req: VideoRequest, job_id: str) -> d
 def health() -> dict[str, Any]:
     import shutil
     return {"status": "ok", "ffmpeg": bool(shutil.which("ffmpeg")), "ai_images": video_core.ai_available(),
+            "narration": video_core.narration_available(PIPER_MODEL), "sounds": SOUNDS_DIR.is_dir(),
             "queued": WORK_QUEUE.qsize()}
 
 
@@ -132,7 +138,8 @@ def create_job(req: VideoRequest) -> dict:
 @app.post("/api/video/jobs/upload")
 async def create_job_upload(performance: UploadFile = File(...), audio: UploadFile | None = File(None),
                             images: Literal["placeholder", "ai"] = Form("placeholder"),
-                            ai_prompts: bool = Form(False), subtitles: bool = Form(True)) -> dict:
+                            ai_prompts: bool = Form(False), subtitles: bool = Form(True),
+                            narration: Literal["auto", "piper", "none"] = Form("auto")) -> dict:
     """Same thing with file uploads — used by the built-in test page."""
     job_id = uuid.uuid4().hex[:12]
     try:
@@ -143,7 +150,7 @@ async def create_job_upload(performance: UploadFile = File(...), audio: UploadFi
     if audio is not None and audio.filename:
         audio_path = UPLOAD_DIR / f"{job_id}{Path(audio.filename).suffix or '.wav'}"
         audio_path.write_bytes(await audio.read())
-    req = VideoRequest(performance=data, images=images, ai_prompts=ai_prompts, subtitles=subtitles)
+    req = VideoRequest(performance=data, images=images, ai_prompts=ai_prompts, subtitles=subtitles, narration=narration)
     return enqueue(data, audio_path, req, job_id)
 
 

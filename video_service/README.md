@@ -1,7 +1,11 @@
 # Harikatha Video Service
 
-A separate service (port **8001**) that turns a generated performance into an MP4:
-one picture per section, slow zoom, subtitles, and the narration audio.
+A separate service (port **8001**) that turns a generated performance into a narrated MP4:
+
+- opening title card with a temple bell
+- one picture per section (title card or AI painting) with a slow zoom and a section label
+- narration spoken sentence by sentence with Piper, so subtitles match the voice exactly
+- soft tanpura underneath, plus scene sounds (battle drums, river, flute, strings) per section
 
 It never imports the main backend, so the team can keep changing the backend and frontend freely.
 The only contract is the performance JSON: `{ title, sections: [{ type, title, content }] }`.
@@ -15,7 +19,8 @@ The only contract is the performance JSON: `{ title, sections: [{ type, title, c
  plays the MP4    ◀─── GET  /api/video/jobs/{id}/file        └─ ffmpeg: zoom + join + audio
 ```
 
-All free and local: Ollama for picture prompts (optional), SD-Turbo for AI paintings (optional).
+All free and local: Piper for the voice, Ollama for picture prompts (optional), SD-Turbo for AI paintings (optional).
+Voice model and sounds default to `../backend/voices` and `../backend/sounds`; override with `PIPER_MODEL` / `SOUNDS_DIR`.
 
 ## Files
 | File | What it is |
